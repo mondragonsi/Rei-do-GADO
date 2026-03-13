@@ -10,6 +10,25 @@ import plotly.express as px
 
 from detector import CattleDetector, MODELS, COCO_COW_CLASS_ID
 
+# ── Auto-detect local models ──────────────────────────────────────────────────
+MODELS_DIR = Path(__file__).parent / "models"
+ICAERUS_MODEL = MODELS_DIR / "cow_aerial_v2.pt"
+FINETUNED_MODEL = MODELS_DIR / "cow_aerial_finetuned.pt"
+
+def _detect_local_models() -> dict:
+    """Returns dict of display_name → path for locally available .pt files."""
+    found = {}
+    if FINETUNED_MODEL.exists():
+        found["⭐ Fine-tuned BovSmart (melhor)"] = str(FINETUNED_MODEL)
+    if ICAERUS_MODEL.exists():
+        found["🚁 ICAERUS Drone v2 (93% precisão)"] = str(ICAERUS_MODEL)
+    for pt in sorted(MODELS_DIR.glob("*.pt")):
+        if pt not in (FINETUNED_MODEL, ICAERUS_MODEL):
+            found[f"📦 {pt.stem}"] = str(pt)
+    return found
+
+LOCAL_MODELS = _detect_local_models()
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Page configuration
 # ─────────────────────────────────────────────────────────────────────────────
@@ -168,31 +187,53 @@ with st.sidebar:
 
     # ── Modelo ──────────────────────────────────────────────────────────────
     st.markdown("#### 🧠 Modelo de IA")
-    use_custom = st.checkbox("Usar modelo customizado (.pt)", value=False)
 
-    if use_custom:
-        custom_model_path = st.text_input(
-            "Caminho do modelo (.pt)",
-            placeholder="C:/modelos/meu_modelo_drone.pt",
-            help="Modelo treinado especificamente para vista aérea de bovinos.",
-        )
-        cow_class_id = st.number_input(
-            "ID da classe boi no modelo",
-            min_value=0,
-            max_value=99,
-            value=0,
-            help="0 se o modelo foi treinado só com bovinos. 19 para COCO.",
-        )
+    # Build model options: local aerial models first, then COCO fallbacks
+    if LOCAL_MODELS:
+        MODEL_OPTIONS = list(LOCAL_MODELS.keys()) + ["─── Modelos COCO (genérico) ───"] + list(MODELS.keys())
+    else:
+        MODEL_OPTIONS = list(MODELS.keys())
+        st.warning("Modelo ICAERUS não encontrado. Rode `download_model.py` ou use Fine-Tuning.")
+
+    selected_model = st.selectbox(
+        "Modelo de detecção",
+        options=MODEL_OPTIONS,
+        index=0,
+        help="Modelos 🚁/⭐ são treinados para vista aérea de drone — muito mais precisos.",
+    )
+
+    # Resolve to path/key
+    if selected_model in LOCAL_MODELS:
+        custom_model_path = LOCAL_MODELS[selected_model]
+        cow_class_id = 0  # aerial models have cow as class 0
         model_key = None
+        st.success(f"✅ Modelo aéreo: `{Path(custom_model_path).name}`  •  class_id = 0")
+    elif selected_model.startswith("─"):
+        # Separator selected — fallback to first real COCO model
+        custom_model_path = None
+        cow_class_id = COCO_COW_CLASS_ID
+        model_key = list(MODELS.keys())[0]
     else:
         custom_model_path = None
         cow_class_id = COCO_COW_CLASS_ID
-        model_key = st.selectbox(
-            "Modelo YOLOv8",
-            options=list(MODELS.keys()),
-            index=2,
-            help="Modelos maiores são mais precisos mas mais lentos.",
+        model_key = selected_model
+
+    with st.expander("Modelo customizado (caminho manual)", expanded=False):
+        manual_path = st.text_input(
+            "Caminho do .pt",
+            placeholder="C:/meu_modelo.pt",
+            help="Substitui a seleção acima se preenchido.",
         )
+        manual_class_id = st.number_input(
+            "cow_class_id",
+            min_value=0, max_value=99, value=0,
+            help="0 para modelos treinados só com bovinos. 19 para COCO.",
+        )
+        if manual_path and Path(manual_path).exists():
+            custom_model_path = manual_path
+            cow_class_id = int(manual_class_id)
+            model_key = None
+            st.success(f"✅ Usando: `{Path(manual_path).name}`")
 
     st.markdown("---")
 
@@ -227,6 +268,17 @@ with st.sidebar:
         step=1,
     )
 
+    st.markdown("---")
+    with st.expander("🔬 Fine-Tuning", expanded=False):
+        st.markdown(
+            "Para treinar um modelo personalizado com seus vídeos de drone:"
+        )
+        st.code("python finetune.py", language="bash")
+        st.markdown("Com dataset Roboflow (1.723 imgs extras):")
+        st.code("python finetune.py --roboflow-key SUA_KEY", language="bash")
+        st.caption(
+            "API key gratuita em [roboflow.com](https://app.roboflow.com) → Settings → API Key"
+        )
     st.markdown("---")
     st.markdown(
         "<small style='color:#5a8a3a'>BovSmart v2.0 · YOLOv8 + SAHI + ByteTrack</small>",
