@@ -184,9 +184,24 @@ with st.sidebar:
 
     # ── Modo de câmera ──────────────────────────────────────────────────────
     st.markdown("#### 📷 Tipo de Filmagem")
+
+    use_color_detection = st.toggle(
+        "🐂 Modo Nelore/Branco (gado branco visto de drone)",
+        value=False,
+        help=(
+            "Detecta gado branco (Nelore, Zebu, Brahman) por contraste de cor, "
+            "sem modelo de IA. Muito mais rápido. Funciona bem quando os animais "
+            "são visivelmente mais claros que o fundo."
+        ),
+    )
+
+    if use_color_detection:
+        st.success("🐂 Detecção por contraste ativa — sem modelo de IA, muito rápido!")
+        st.caption("Ideal para Nelore branco no cerrado. Pode ter falsos positivos em áreas com grama clara.")
+
     drone_mode = st.toggle(
-        "Modo Drone (vista aérea)",
-        value=True,
+        "Modo Drone SAHI (vista aérea com IA)",
+        value=not use_color_detection,
         help=(
             "Ativa o SAHI — divide cada frame em tiles sobrepostos e "
             "roda o YOLO em cada um. Essencial para detectar bovinos "
@@ -508,7 +523,12 @@ if uploaded:
         # Save upload & init detector
         input_path = save_upload(uploaded)
 
-        with st.spinner("Carregando modelo de IA (primeira vez faz download automático)..."):
+        spinner_msg = (
+            "Inicializando detecção por cor (Modo Nelore)..."
+            if use_color_detection
+            else "Carregando modelo de IA..."
+        )
+        with st.spinner(spinner_msg):
             detector = CattleDetector(
                 model_key=model_key,
                 custom_model_path=custom_model_path or None,
@@ -521,6 +541,7 @@ if uploaded:
                 cow_class_id=int(cow_class_id),
                 max_inference_size=max_inference_size,
                 perform_standard_pred=perform_standard_pred,
+                use_color_detection=use_color_detection,
             )
 
         # Get FPS for charts

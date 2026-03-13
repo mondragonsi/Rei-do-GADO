@@ -54,8 +54,9 @@ class CattleDetector:
         tile_overlap: float = 0.20,
         imgsz: int = 1280,
         cow_class_id: int = COCO_COW_CLASS_ID,
-        max_inference_size: int = 1280,   # resize frame before SAHI (key speed opt)
-        perform_standard_pred: bool = False,  # full-frame pass on top of tiles
+        max_inference_size: int = 1280,
+        perform_standard_pred: bool = False,
+        use_color_detection: bool = False,  # fallback for white Nelore/Zebu cattle
     ):
         self.confidence = confidence
         self.iou = iou
@@ -66,6 +67,7 @@ class CattleDetector:
         self.cow_class_id = cow_class_id
         self.max_inference_size = max_inference_size
         self.perform_standard_pred = perform_standard_pred
+        self.use_color_detection = use_color_detection
 
         # ── Load model ──────────────────────────────────────────────────────
         if custom_model_path:
@@ -136,8 +138,10 @@ class CattleDetector:
 
     def process_frame(self, frame: np.ndarray) -> tuple:
         """Run detection + tracking. Returns (annotated_frame, current_count)."""
-        if self.drone_mode:
-            # Resize for inference, detect, scale boxes back to original size
+        if self.use_color_detection:
+            # Color/contrast-based detection: no model needed, works for white Nelore
+            detections = self._detect_white_cattle(frame)
+        elif self.drone_mode:
             small, scale = self._resize_for_inference(frame)
             detections = self._detect_sahi(small)
             if scale != 1.0 and len(detections) > 0:
@@ -194,6 +198,63 @@ class CattleDetector:
         return resized, scale
 
     # ── Detection backends ───────────────────────────────────────────────────
+
+    def _detect_white_cattle(self, frame: np.ndarray) -> sv.Detections:
+        """
+        Detecção por contraste local para gado branco (Nelore/Zebu) visto de drone.
+        Funciona sem modelo treinado — detecta objetos que são localmente mais
+        brilhantes que a vizinhança e têm baixa saturação (branco/cinza).
+        Ideal para Nelore/Zebu no cerrado brasileiro.
+        """
+        h, w = frame.shape[:2]
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        hsv  = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+        # Contraste local: quanto cada pixel é mais claro que sua vizinhança
+        blur = cv2.GaussianBlur(gray, (51, 51), 0).astype(np.int16)
+        local_contrast = np.clip(gray.astype(np.int16) - blur, 0, 255).astype(np.uint8)
+
+        # Máscara de baixa saturação (branco/cinza — não é vegetação verde)
+        low_sat = (hsv[:, :, 1] < 65).astype(np.uint8) * 255
+
+        # Combinar
+        combined = cv2.bitwise_and(local_contrast, low_sat)
+        _, thresh = cv2.threshold(combined, 28, 255, cv2.THRESH_BINARY)
+
+        # Morfologia para limpar ruído e unir fragmentos
+        k = np.ones((3, 3), np.uint8)
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN,  k, iterations=1)
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, k, iterations=3)
+
+        # Remover barra de progresso de vídeo na parte inferior (comum em drones)
+        thresh[int(h * 0.92):, :] = 0
+
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        boxes, scores = [], []
+        total_px = h * w
+        for c in contours:
+            area = cv2.contourArea(c)
+            if area < 40 or area > total_px * 0.008:
+                continue
+            x, y, bw, bh = cv2.boundingRect(c)
+            ratio = bw / max(bh, 1)
+            if not (0.25 < ratio < 4.5):
+                continue
+            # Confiança proporcional ao contraste local médio
+            roi_contrast = local_contrast[y:y+bh, x:x+bw]
+            score = float(np.clip(roi_contrast.mean() / 80.0, 0.3, 0.99))
+            boxes.append([x, y, x + bw, y + bh])
+            scores.append(score)
+
+        if not boxes:
+            return sv.Detections.empty()
+
+        return sv.Detections(
+            xyxy=np.array(boxes, dtype=np.float32),
+            confidence=np.array(scores, dtype=np.float32),
+            class_id=np.zeros(len(boxes), dtype=int),
+        )
 
     def _detect_standard(self, frame: np.ndarray) -> sv.Detections:
         """Standard single-pass YOLO inference (ground-level footage)."""
