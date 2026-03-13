@@ -81,6 +81,16 @@ class CattleDetector:
         self._sahi_model = None
         self._sahi_model_path = model_path
 
+        # ── Background subtractor (Modo Nelore) ─────────────────────────────
+        # MOG2 separa bois em movimento de reflexos de sol estáticos na grama.
+        # history=400: ~13s a 30fps para aprender o fundo
+        # varThreshold=36: sensível o suficiente para bois que andam devagar
+        # detectShadows=False: sombras dos bois não viram falso positivo
+        self._bg_sub = cv2.createBackgroundSubtractorMOG2(
+            history=400, varThreshold=36, detectShadows=False
+        )
+        self._bg_frames = 0  # quantos frames o MOG2 já viu
+
         self.stats = CattleStats()
         self._init_tracker()
         self._init_annotators()
@@ -133,6 +143,10 @@ class CattleDetector:
     def reset(self):
         self.stats = CattleStats()
         self._init_tracker()
+        self._bg_sub = cv2.createBackgroundSubtractorMOG2(
+            history=400, varThreshold=36, detectShadows=False
+        )
+        self._bg_frames = 0
 
     # ── Public entry point ───────────────────────────────────────────────────
 
@@ -224,9 +238,10 @@ class CattleDetector:
         blob_sat  = hsv[y:y+bh, x:x+bw, 1][roi_mask == 255]
         if len(blob_gray) == 0:
             return None
-        if blob_gray.mean() < 148:   # grama em sombra: contraste local alto, brilho baixo
+        # Pixel thresholds mais permissivos pois MOG2 já filtrou reflexos estáticos
+        if blob_gray.mean() < 135:   # deve ser genuinamente claro (não sombra)
             return None
-        if blob_sat.mean() > 50:     # reflexo de sol na grama retém pigmento (sat 50-80)
+        if blob_sat.mean() > 60:     # deve ser predominantemente branco/cinza
             return None
 
         score = float(np.clip(local_contrast[y:y+bh, x:x+bw].mean() / 80.0, 0.3, 0.99))
@@ -234,31 +249,53 @@ class CattleDetector:
 
     def _detect_white_cattle(self, frame: np.ndarray) -> sv.Detections:
         """
-        Detecção por contraste local para gado branco (Nelore/Zebu) visto de drone.
-        Funciona sem modelo treinado — detecta objetos localmente mais brilhantes
-        que a vizinhança, com baixa saturação e forma compacta.
+        Detecção Nelore/Zebu por contraste + movimento (MOG2).
 
-        Filtros anti-falso-positivo:
-          - Área 40–800 px²  (Nelore a ~50-100m)
-          - Extent   > 0.33  (exclui grama comprida)
-          - Solidity > 0.60  (exclui formas irregulares)
-          - Brilho   > 148   (exclui sombras com contraste local)
-          - Sat      < 50    (exclui reflexo de sol na grama verde/amarela)
+        Pipeline:
+          1. MOG2 background subtraction → máscara de movimento (bois se mexem,
+             reflexos de sol na grama são estáticos)
+          2. Filtro de cor: brilho local + baixa saturação (confirma que é branco)
+          3. Combinação: pixel branco E em região que se moveu recentemente
+          4. Filtros de forma (extent, solidity) + análise de pixel exato
+
+        Nos primeiros 30 frames o MOG2 ainda está aprendendo o fundo, então
+        só o filtro de cor é usado (fallback).
         """
         h, _ = frame.shape[:2]
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         hsv  = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
+        # ── 1. Máscara de movimento via MOG2 ────────────────────────────────
+        # learningRate baixo (0.004) = fundo aprende devagar →
+        # bois parados por até ~4s ainda aparecem como foreground
+        fg = self._bg_sub.apply(frame, learningRate=0.004)
+        self._bg_frames += 1
+
+        # Dilatar a máscara de movimento para cobrir o corpo inteiro do boi
+        # (MOG2 tende a detectar só as bordas do animal em movimento)
+        kd = np.ones((9, 9), np.uint8)
+        fg = cv2.dilate(fg, kd, iterations=3)
+
+        # ── 2. Filtro de cor: contraste local + baixa saturação ─────────────
         blur = cv2.GaussianBlur(gray, (51, 51), 0).astype(np.int16)
         local_contrast = np.clip(gray.astype(np.int16) - blur, 0, 255).astype(np.uint8)
 
         low_sat = (hsv[:, :, 1] < 65).astype(np.uint8) * 255
         combined = cv2.bitwise_and(local_contrast, low_sat)
-        _, thresh = cv2.threshold(combined, 28, 255, cv2.THRESH_BINARY)
+        _, color_thresh = cv2.threshold(combined, 25, 255, cv2.THRESH_BINARY)
+
+        # ── 3. Combinar cor + movimento ──────────────────────────────────────
+        # Após warm-up do MOG2 (30 frames ≈ 1s a 30fps):
+        #   thresh = branco E se-moveu → elimina reflexos estáticos de sol
+        # Antes do warm-up: só cor (fallback)
+        if self._bg_frames > 30:
+            thresh = cv2.bitwise_and(color_thresh, fg)
+        else:
+            thresh = color_thresh
 
         k = np.ones((3, 3), np.uint8)
         thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN,  k, iterations=2)
-        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, k, iterations=3)
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, k, iterations=4)
         thresh[int(h * 0.92):, :] = 0
 
         contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
