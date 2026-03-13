@@ -575,12 +575,29 @@ if uploaded:
         <div class="stat-grid">
         """, unsafe_allow_html=True)
 
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("🐄 Total Únicos", detector.stats.total_unique)
-        m2.metric("📈 Máx. Simultâneos", detector.stats.max_simultaneous)
-        m3.metric("📊 Média por Frame", f"{detector.stats.avg_per_frame:.1f}")
-        m4.metric("🎞️ Frames Analisados", detector.stats.total_frames)
-        m5.metric("⏱️ Tempo de Processamento", f"{elapsed:.1f}s")
+        avg = detector.stats.avg_per_frame
+        st.markdown(f"""
+        <div style="background:linear-gradient(135deg,#1a3a08,#2d5916);border:2px solid #4a8c23;
+             border-radius:12px;padding:1.2rem 2rem;text-align:center;margin-bottom:1rem;">
+          <div style="font-size:0.85rem;color:#8fb870;text-transform:uppercase;letter-spacing:2px;">
+            Contagem Estimada do Rebanho
+          </div>
+          <div style="font-size:4rem;font-weight:900;color:#7fff5a;line-height:1.1;">
+            {avg:.0f}
+          </div>
+          <div style="font-size:0.8rem;color:#6a9a50;margin-top:4px;">
+            média de animais visíveis por frame — métrica mais confiável
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("📈 Máx. Simultâneos", detector.stats.max_simultaneous,
+                  help="Maior número de bois visíveis ao mesmo tempo em um único frame.")
+        m2.metric("🔢 IDs únicos gerados", detector.stats.total_unique,
+                  help="Total de tracks criados pelo ByteTrack. Pode ser maior que o rebanho real se o mesmo boi sair e voltar ao frame.")
+        m3.metric("🎞️ Frames Analisados", detector.stats.total_frames)
+        m4.metric("⏱️ Processamento", f"{elapsed:.1f}s")
 
         st.markdown("---")
 
@@ -631,18 +648,16 @@ if uploaded:
         mode_str = f"Drone (SAHI tiles={tile_size}px, overlap={tile_overlap:.0%})" if drone_mode else "Solo (padrão)"
         report_lines = [
             f"## Relatório BovSmart — {uploaded.name}",
-            f"",
-            f"| Métrica | Valor |",
-            f"|---|---|",
-            f"| Total de bovinos únicos identificados | **{detector.stats.total_unique}** |",
-            f"| Máximo simultâneo no quadro | **{detector.stats.max_simultaneous}** |",
-            f"| Média de bovinos por frame | **{detector.stats.avg_per_frame:.1f}** |",
-            f"| Frames analisados | **{detector.stats.total_frames}** |",
-            f"| Modo de filmagem | **{mode_str}** |",
-            f"| Modelo de IA utilizado | **{model_key or custom_model_path}** |",
-            f"| Confiança mínima | **{confidence:.0%}** |",
-            f"| IOU threshold | **{iou:.0%}** |",
-            f"| Tempo de processamento | **{elapsed:.1f} segundos** |",
+            "",
+            "| Métrica | Valor | Observação |",
+            "|---|---|---|",
+            f"| **Contagem estimada do rebanho** | **{detector.stats.avg_per_frame:.0f}** | Média de animais/frame — métrica mais confiável |",
+            f"| Máximo simultâneo no quadro | {detector.stats.max_simultaneous} | Limite superior da contagem |",
+            f"| IDs únicos gerados (ByteTrack) | {detector.stats.total_unique} | Pode inflacionar se boi sai e volta ao frame |",
+            f"| Frames analisados | {detector.stats.total_frames} | |",
+            f"| Modo de filmagem | {mode_str} | |",
+            f"| Modelo de IA utilizado | {model_key or custom_model_path} | |",
+            f"| Tempo de processamento | {elapsed:.1f} segundos | |",
         ]
         st.markdown("\n".join(report_lines))
 
