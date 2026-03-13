@@ -1,0 +1,74 @@
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ─── Virtual environments ─────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+.env/
+
+# ─── Environment variables (NUNCA commitar) ───────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ─── Model weights (arquivos grandes — usar Git LFS ou baixar manualmente) ────
+*.pt
+*.pth
+*.onnx
+*.engine
+*.weights
+runs/
+
+# ─── Vídeos e imagens de entrada (dados sensíveis da fazenda) ─────────────────
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.jpg
+*.jpeg
+*.png
+*.gif
+uploads/
+videos/
+input/
+output/
+
+# ─── Arquivos temporários do processamento ────────────────────────────────────
+tmp/
+temp/
+*.tmp
+processed/
+
+# ─── Streamlit cache ──────────────────────────────────────────────────────────
+.streamlit/secrets.toml
+
+# ─── IDEs e editores ──────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ─── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ─── Build / dist ─────────────────────────────────────────────────────────────
+dist/
+build/
+*.egg-info/
+
+# ─── Jupyter ──────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
