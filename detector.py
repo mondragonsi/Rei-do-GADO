@@ -205,8 +205,15 @@ class CattleDetector:
         Funciona sem modelo treinado — detecta objetos que são localmente mais
         brilhantes que a vizinhança e têm baixa saturação (branco/cinza).
         Ideal para Nelore/Zebu no cerrado brasileiro.
+
+        Filtros anti-falso-positivo (grama/sol):
+          - Saturação HSV < 65  (exclui vegetação verde; amarelo com sol pode passar)
+          - Contraste mínimo 28 (captura brilho pontual dos bois)
+          - Área 40–800 px²    (Nelore a ~50-100m ocupa esse range no frame)
+          - Extent   > 0.33    (grama comprida tem extent < 0.25)
+          - Solidity > 0.60    (gama irregular tem solidity < 0.55)
         """
-        h, w = frame.shape[:2]
+        h, _ = frame.shape[:2]
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         hsv  = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
@@ -214,16 +221,16 @@ class CattleDetector:
         blur = cv2.GaussianBlur(gray, (51, 51), 0).astype(np.int16)
         local_contrast = np.clip(gray.astype(np.int16) - blur, 0, 255).astype(np.uint8)
 
-        # Máscara de baixa saturação (branco/cinza — não é vegetação verde)
+        # Saturação < 65: exclui vegetação verde (grama amarelada com forte sol pode passar)
         low_sat = (hsv[:, :, 1] < 65).astype(np.uint8) * 255
 
-        # Combinar
+        # Limiar 28: captura brilho pontual dos bois sem perder os menores
         combined = cv2.bitwise_and(local_contrast, low_sat)
         _, thresh = cv2.threshold(combined, 28, 255, cv2.THRESH_BINARY)
 
-        # Morfologia para limpar ruído e unir fragmentos
+        # 2 iterações de abertura remove ruído de grama fina
         k = np.ones((3, 3), np.uint8)
-        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN,  k, iterations=1)
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN,  k, iterations=2)
         thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, k, iterations=3)
 
         # Remover barra de progresso de vídeo na parte inferior (comum em drones)
@@ -232,15 +239,32 @@ class CattleDetector:
         contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         boxes, scores = [], []
-        total_px = h * w
         for c in contours:
             area = cv2.contourArea(c)
-            if area < 40 or area > total_px * 0.008:
+
+            # Tamanho: Nelore de drone a ~50-100m ocupa 40–800 px²
+            # Limite máximo conservador: evita manchas grandes de solo claro
+            if area < 40 or area > 800:
                 continue
+
             x, y, bw, bh = cv2.boundingRect(c)
+
+            # Proporção: gado é compacto (não muito alongado)
             ratio = bw / max(bh, 1)
-            if not (0.25 < ratio < 4.5):
+            if not (0.25 < ratio < 4.0):
                 continue
+
+            # Extent = área / bbox. Grama comprida tem extent < 0.30
+            extent = area / max(bw * bh, 1)
+            if extent < 0.33:
+                continue
+
+            # Solidity = área / casco convexo. Grama irregular < 0.58
+            hull = cv2.convexHull(c)
+            hull_area = cv2.contourArea(hull)
+            if hull_area > 0 and area / hull_area < 0.60:
+                continue
+
             # Confiança proporcional ao contraste local médio
             roi_contrast = local_contrast[y:y+bh, x:x+bw]
             score = float(np.clip(roi_contrast.mean() / 80.0, 0.3, 0.99))
