@@ -8,7 +8,7 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 
-from detector import CattleDetector, MODELS
+from detector import CattleDetector, MODELS, COCO_COW_CLASS_ID
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Page configuration
@@ -122,49 +122,114 @@ with st.sidebar:
     st.markdown("### ⚙️ Configurações")
     st.markdown("---")
 
-    model_key = st.selectbox(
-        "Modelo de IA",
-        options=list(MODELS.keys()),
-        index=2,
-        help="Modelos maiores são mais precisos mas mais lentos.",
+    # ── Modo de câmera ──────────────────────────────────────────────────────
+    st.markdown("#### 📷 Tipo de Filmagem")
+    drone_mode = st.toggle(
+        "Modo Drone (vista aérea)",
+        value=True,
+        help=(
+            "Ativa o SAHI — divide cada frame em tiles sobrepostos e "
+            "roda o YOLO em cada um. Essencial para detectar bovinos "
+            "vistos de cima em alta resolução."
+        ),
     )
 
+    if drone_mode:
+        st.success("🚁 SAHI ativado — detecção por tiles")
+        imgsz = 1280  # not used in SAHI mode but kept for compatibility
+        with st.expander("Configurações SAHI", expanded=False):
+            tile_size = st.select_slider(
+                "Tamanho do tile (px)",
+                options=[320, 512, 640, 768, 1024],
+                value=640,
+                help="Tile menor = detecta animais menores, mas é mais lento.",
+            )
+            tile_overlap = st.slider(
+                "Overlap entre tiles",
+                min_value=0.10,
+                max_value=0.40,
+                value=0.20,
+                step=0.05,
+                format="%.2f",
+                help="Overlap maior evita perder animais na borda dos tiles.",
+            )
+    else:
+        st.info("📹 Modo solo — inferência padrão")
+        tile_size = 640
+        tile_overlap = 0.20
+        imgsz = st.select_slider(
+            "Resolução de inferência (imgsz)",
+            options=[640, 1280, 1920],
+            value=1280,
+            help="Maior resolução detecta objetos menores, mas é mais lento.",
+        )
+
+    st.markdown("---")
+
+    # ── Modelo ──────────────────────────────────────────────────────────────
+    st.markdown("#### 🧠 Modelo de IA")
+    use_custom = st.checkbox("Usar modelo customizado (.pt)", value=False)
+
+    if use_custom:
+        custom_model_path = st.text_input(
+            "Caminho do modelo (.pt)",
+            placeholder="C:/modelos/meu_modelo_drone.pt",
+            help="Modelo treinado especificamente para vista aérea de bovinos.",
+        )
+        cow_class_id = st.number_input(
+            "ID da classe boi no modelo",
+            min_value=0,
+            max_value=99,
+            value=0,
+            help="0 se o modelo foi treinado só com bovinos. 19 para COCO.",
+        )
+        model_key = None
+    else:
+        custom_model_path = None
+        cow_class_id = COCO_COW_CLASS_ID
+        model_key = st.selectbox(
+            "Modelo YOLOv8",
+            options=list(MODELS.keys()),
+            index=2,
+            help="Modelos maiores são mais precisos mas mais lentos.",
+        )
+
+    st.markdown("---")
+
+    # ── Thresholds ──────────────────────────────────────────────────────────
+    st.markdown("#### 🎯 Thresholds")
     confidence = st.slider(
-        "Confiança mínima de detecção",
+        "Confiança mínima",
         min_value=0.10,
         max_value=0.90,
-        value=0.40,
+        value=0.25 if drone_mode else 0.40,
         step=0.05,
         format="%.2f",
-        help="Threshold abaixo do qual as detecções são descartadas.",
+        help="Drone: use 0.20–0.30. Solo: use 0.35–0.50.",
+    )
+    iou = st.slider(
+        "IOU (supressão de duplicatas)",
+        min_value=0.10,
+        max_value=0.70,
+        value=0.30 if drone_mode else 0.45,
+        step=0.05,
+        format="%.2f",
+        help="Menor = remove mais caixas sobrepostas. Recomendado baixo para drone.",
     )
 
+    st.markdown("---")
+
     preview_every = st.slider(
-        "Mostrar preview a cada N frames",
+        "Preview a cada N frames",
         min_value=1,
         max_value=60,
         value=10,
         step=1,
-        help="Intervalo de atualização do preview durante o processamento.",
     )
 
     st.markdown("---")
-    st.markdown("#### 📋 Sobre o Modelo")
-    st.info(
-        "Usa **YOLOv8** (estado da arte em detecção de objetos) "
-        "com **ByteTrack** para rastreamento e identificação individual "
-        "de cada bovino no vídeo."
-    )
-    st.markdown("---")
-    st.markdown("#### 🐄 Classes Detectadas")
-    st.success("✅ Bovinos (gado)")
     st.markdown(
-        "<small>Baseado no dataset COCO — classe 'cow'</small>",
-        unsafe_allow_html=True,
-    )
-    st.markdown("---")
-    st.markdown(
-        "<small style='color:#5a8a3a'>BovSmart v1.0 · Powered by YOLOv8 + ByteTrack</small>",
+        "<small style='color:#5a8a3a'>BovSmart v2.0 · YOLOv8 + SAHI + ByteTrack</small>",
         unsafe_allow_html=True,
     )
 
@@ -327,10 +392,17 @@ if uploaded:
     if start_btn:
         st.markdown("---")
         st.markdown('<div class="section-title">🔄 Processando com IA...</div>', unsafe_allow_html=True)
-        st.caption(
-            "O modelo YOLOv8 está detectando bovinos frame a frame e o ByteTrack "
-            "está atribuindo IDs únicos a cada animal."
-        )
+        if drone_mode:
+            st.caption(
+                "Modo Drone ativo: SAHI divide cada frame em tiles sobrepostos, "
+                "roda YOLOv8 em cada tile e mergeia os resultados. "
+                "ByteTrack atribui IDs únicos persistentes a cada animal."
+            )
+        else:
+            st.caption(
+                "YOLOv8 detectando bovinos frame a frame. "
+                "ByteTrack atribui IDs únicos a cada animal."
+            )
 
         # Placeholders
         progress_bar = st.progress(0.0, text="Inicializando modelo...")
@@ -341,7 +413,17 @@ if uploaded:
         input_path = save_upload(uploaded)
 
         with st.spinner("Carregando modelo de IA (primeira vez faz download automático)..."):
-            detector = CattleDetector(model_key=model_key, confidence=confidence)
+            detector = CattleDetector(
+                model_key=model_key,
+                custom_model_path=custom_model_path or None,
+                confidence=confidence,
+                iou=iou,
+                drone_mode=drone_mode,
+                tile_size=tile_size,
+                tile_overlap=tile_overlap,
+                imgsz=imgsz if not drone_mode else 1280,
+                cow_class_id=int(cow_class_id),
+            )
 
         # Get FPS for charts
         cap_tmp = cv2.VideoCapture(input_path)
@@ -426,6 +508,7 @@ if uploaded:
         st.markdown("---")
         st.markdown('<div class="section-title">📋 Relatório Final</div>', unsafe_allow_html=True)
 
+        mode_str = f"Drone (SAHI tiles={tile_size}px, overlap={tile_overlap:.0%})" if drone_mode else "Solo (padrão)"
         report_lines = [
             f"## Relatório BovSmart — {uploaded.name}",
             f"",
@@ -435,8 +518,10 @@ if uploaded:
             f"| Máximo simultâneo no quadro | **{detector.stats.max_simultaneous}** |",
             f"| Média de bovinos por frame | **{detector.stats.avg_per_frame:.1f}** |",
             f"| Frames analisados | **{detector.stats.total_frames}** |",
-            f"| Modelo de IA utilizado | **{model_key}** |",
+            f"| Modo de filmagem | **{mode_str}** |",
+            f"| Modelo de IA utilizado | **{model_key or custom_model_path}** |",
             f"| Confiança mínima | **{confidence:.0%}** |",
+            f"| IOU threshold | **{iou:.0%}** |",
             f"| Tempo de processamento | **{elapsed:.1f} segundos** |",
         ]
         st.markdown("\n".join(report_lines))
