@@ -135,10 +135,51 @@ st.markdown("""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Speed presets
+# ─────────────────────────────────────────────────────────────────────────────
+SPEED_PRESETS = {
+    "⚡ Turbo  (muito rápido, menor precisão)": {
+        "tile_size": 768, "tile_overlap": 0.10, "frame_skip": 4,
+        "max_inference_size": 960, "perform_standard_pred": False,
+        "confidence": 0.25, "iou": 0.30,
+    },
+    "🚀 Rápido  (recomendado)": {
+        "tile_size": 640, "tile_overlap": 0.15, "frame_skip": 2,
+        "max_inference_size": 1280, "perform_standard_pred": False,
+        "confidence": 0.25, "iou": 0.30,
+    },
+    "⚖️ Balanceado": {
+        "tile_size": 640, "tile_overlap": 0.20, "frame_skip": 1,
+        "max_inference_size": 1280, "perform_standard_pred": False,
+        "confidence": 0.25, "iou": 0.30,
+    },
+    "🔬 Preciso  (mais lento)": {
+        "tile_size": 512, "tile_overlap": 0.25, "frame_skip": 1,
+        "max_inference_size": 1920, "perform_standard_pred": True,
+        "confidence": 0.20, "iou": 0.25,
+    },
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Sidebar — settings
 # ─────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### ⚙️ Configurações")
+    st.markdown("---")
+
+    # ── Velocidade ──────────────────────────────────────────────────────────
+    st.markdown("#### ⚡ Velocidade")
+    speed_key = st.selectbox(
+        "Preset de velocidade",
+        options=list(SPEED_PRESETS.keys()),
+        index=1,
+        help="Turbo pula frames e usa tiles maiores. Preciso analisa cada frame com tiles pequenos.",
+    )
+    preset = SPEED_PRESETS[speed_key]
+    frame_skip = preset["frame_skip"]
+    max_inference_size = preset["max_inference_size"]
+    perform_standard_pred = preset["perform_standard_pred"]
+
     st.markdown("---")
 
     # ── Modo de câmera ──────────────────────────────────────────────────────
@@ -155,22 +196,19 @@ with st.sidebar:
 
     if drone_mode:
         st.success("🚁 SAHI ativado — detecção por tiles")
-        imgsz = 1280  # not used in SAHI mode but kept for compatibility
-        with st.expander("Configurações SAHI", expanded=False):
+        imgsz = 1280
+        with st.expander("Ajuste fino SAHI (opcional)", expanded=False):
             tile_size = st.select_slider(
                 "Tamanho do tile (px)",
                 options=[320, 512, 640, 768, 1024],
-                value=640,
-                help="Tile menor = detecta animais menores, mas é mais lento.",
+                value=preset["tile_size"],
+                help="Tile menor = detecta animais menores, mais lento.",
             )
             tile_overlap = st.slider(
                 "Overlap entre tiles",
-                min_value=0.10,
-                max_value=0.40,
-                value=0.20,
-                step=0.05,
-                format="%.2f",
-                help="Overlap maior evita perder animais na borda dos tiles.",
+                min_value=0.10, max_value=0.40,
+                value=preset["tile_overlap"],
+                step=0.05, format="%.2f",
             )
     else:
         st.info("📹 Modo solo — inferência padrão")
@@ -178,9 +216,7 @@ with st.sidebar:
         tile_overlap = 0.20
         imgsz = st.select_slider(
             "Resolução de inferência (imgsz)",
-            options=[640, 1280, 1920],
-            value=1280,
-            help="Maior resolução detecta objetos menores, mas é mais lento.",
+            options=[640, 1280, 1920], value=1280,
         )
 
     st.markdown("---")
@@ -241,21 +277,17 @@ with st.sidebar:
     st.markdown("#### 🎯 Thresholds")
     confidence = st.slider(
         "Confiança mínima",
-        min_value=0.10,
-        max_value=0.90,
-        value=0.25 if drone_mode else 0.40,
-        step=0.05,
-        format="%.2f",
+        min_value=0.10, max_value=0.90,
+        value=preset["confidence"] if drone_mode else 0.40,
+        step=0.05, format="%.2f",
         help="Drone: use 0.20–0.30. Solo: use 0.35–0.50.",
     )
     iou = st.slider(
         "IOU (supressão de duplicatas)",
-        min_value=0.10,
-        max_value=0.70,
-        value=0.30 if drone_mode else 0.45,
-        step=0.05,
-        format="%.2f",
-        help="Menor = remove mais caixas sobrepostas. Recomendado baixo para drone.",
+        min_value=0.10, max_value=0.70,
+        value=preset["iou"] if drone_mode else 0.45,
+        step=0.05, format="%.2f",
+        help="Menor = remove mais caixas sobrepostas.",
     )
 
     st.markdown("---")
@@ -303,22 +335,25 @@ def save_upload(uploaded_file) -> str:
 def process_video(
     input_path: str,
     detector: CattleDetector,
+    frame_skip: int,
     preview_every: int,
     preview_placeholder,
     progress_bar,
     stats_placeholder,
 ) -> str:
     cap = cv2.VideoCapture(input_path)
-    fps = cap.get(cv2.CAP_PROP_FPS) or 25
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps        = cap.get(cv2.CAP_PROP_FPS) or 25
+    width      = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height     = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     out_path = tempfile.mktemp(suffix=".mp4")
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
+    fourcc   = cv2.VideoWriter_fourcc(*"mp4v")
+    writer   = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
 
-    frame_idx = 0
+    frame_idx  = 0
+    last_annotated = None
+    last_count = 0
     t0 = time.time()
 
     while True:
@@ -326,26 +361,35 @@ def process_video(
         if not ret:
             break
 
-        annotated, count = detector.process_frame(frame)
+        if frame_idx % frame_skip == 0:
+            # Full inference on this frame
+            annotated, last_count = detector.process_frame(frame)
+            last_annotated = annotated
+        else:
+            # Skipped frame: reuse last annotations (smooth output, no inference cost)
+            annotated = last_annotated if last_annotated is not None else frame
+
         writer.write(annotated)
 
         # ── Live preview ────────────────────────────────────────────────────
-        if frame_idx % preview_every == 0:
+        if frame_idx % (preview_every * frame_skip) == 0:
             rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-            preview_placeholder.image(rgb, use_container_width=True, caption=f"Frame {frame_idx}")
-
-            # Live stats
             elapsed = time.time() - t0
-            fps_proc = frame_idx / elapsed if elapsed > 0 else 0
-            eta = (total_frames - frame_idx) / fps_proc if fps_proc > 0 else 0
+            inferred = (frame_idx // frame_skip) + 1
+            fps_proc = inferred / elapsed if elapsed > 0 else 0
+            eta = ((total_frames - frame_idx) / frame_skip) / fps_proc if fps_proc > 0 else 0
+            preview_placeholder.image(
+                rgb, use_container_width=True,
+                caption=f"Frame {frame_idx}  •  {fps_proc:.1f} inf/s",
+            )
             with stats_placeholder.container():
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("🐄 Na tela", count)
+                c1, c2, c3, c4, c5 = st.columns(5)
+                c1.metric("🐄 Na tela", last_count)
                 c2.metric("🔢 Total únicos", detector.stats.total_unique)
                 c3.metric("📈 Máx simultâneos", detector.stats.max_simultaneous)
-                c4.metric("⏱️ ETA", f"{eta:.0f}s")
+                c4.metric("🎞️ FPS proc.", f"{fps_proc:.1f}")
+                c5.metric("⏱️ ETA", f"{eta:.0f}s")
 
-        # ── Progress bar ─────────────────────────────────────────────────────
         if total_frames > 0:
             progress_bar.progress(min(frame_idx / total_frames, 1.0))
 
@@ -475,6 +519,8 @@ if uploaded:
                 tile_overlap=tile_overlap,
                 imgsz=imgsz if not drone_mode else 1280,
                 cow_class_id=int(cow_class_id),
+                max_inference_size=max_inference_size,
+                perform_standard_pred=perform_standard_pred,
             )
 
         # Get FPS for charts
@@ -488,6 +534,7 @@ if uploaded:
         output_path = process_video(
             input_path=input_path,
             detector=detector,
+            frame_skip=frame_skip,
             preview_every=preview_every,
             preview_placeholder=preview_placeholder,
             progress_bar=progress_bar,

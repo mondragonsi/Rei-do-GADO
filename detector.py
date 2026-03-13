@@ -54,6 +54,8 @@ class CattleDetector:
         tile_overlap: float = 0.20,
         imgsz: int = 1280,
         cow_class_id: int = COCO_COW_CLASS_ID,
+        max_inference_size: int = 1280,   # resize frame before SAHI (key speed opt)
+        perform_standard_pred: bool = False,  # full-frame pass on top of tiles
     ):
         self.confidence = confidence
         self.iou = iou
@@ -62,6 +64,8 @@ class CattleDetector:
         self.tile_overlap = tile_overlap
         self.imgsz = imgsz
         self.cow_class_id = cow_class_id
+        self.max_inference_size = max_inference_size
+        self.perform_standard_pred = perform_standard_pred
 
         # ── Load model ──────────────────────────────────────────────────────
         if custom_model_path:
@@ -133,7 +137,11 @@ class CattleDetector:
     def process_frame(self, frame: np.ndarray) -> tuple:
         """Run detection + tracking. Returns (annotated_frame, current_count)."""
         if self.drone_mode:
-            detections = self._detect_sahi(frame)
+            # Resize for inference, detect, scale boxes back to original size
+            small, scale = self._resize_for_inference(frame)
+            detections = self._detect_sahi(small)
+            if scale != 1.0 and len(detections) > 0:
+                detections.xyxy = detections.xyxy / scale
         else:
             detections = self._detect_standard(frame)
 
@@ -167,6 +175,24 @@ class CattleDetector:
         self._draw_hud(annotated, current_count)
         return annotated, current_count
 
+    # ── Resize helper ────────────────────────────────────────────────────────
+
+    def _resize_for_inference(self, frame: np.ndarray) -> tuple:
+        """
+        Downscale frame so its longest side ≤ max_inference_size.
+        Returns (resized_frame, scale_factor).
+        scale_factor < 1 means the frame was shrunk.
+        Example: 4K (3840x2160) → max 1280 → scale=0.333 → ~9x fewer SAHI tiles.
+        """
+        h, w = frame.shape[:2]
+        max_side = self.max_inference_size
+        if max(h, w) <= max_side:
+            return frame, 1.0
+        scale = max_side / max(h, w)
+        new_w, new_h = int(w * scale), int(h * scale)
+        resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        return resized, scale
+
     # ── Detection backends ───────────────────────────────────────────────────
 
     def _detect_standard(self, frame: np.ndarray) -> sv.Detections:
@@ -199,8 +225,8 @@ class CattleDetector:
             slice_width=self.tile_size,
             overlap_height_ratio=self.tile_overlap,
             overlap_width_ratio=self.tile_overlap,
-            perform_standard_pred=True,   # also run on full image
-            postprocess_type="GREEDYNMM", # best merge strategy for overlapping tiles
+            perform_standard_pred=self.perform_standard_pred,
+            postprocess_type="GREEDYNMM",
             postprocess_match_threshold=self.iou,
             verbose=0,
         )
